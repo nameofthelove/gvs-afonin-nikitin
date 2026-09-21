@@ -1,55 +1,82 @@
+"""Build speedup chart: Vector operator+ relative to Eigen::VectorXf."""
+
+from __future__ import annotations
+
 import json
 import os
-import matplotlib.pyplot as plt
 
-def main():
-    json_path = 'benchmark_results.json'
+import plotly.graph_objects as go
+
+
+def main() -> None:
+    json_path = "benchmark_results.json"
     if not os.path.exists(json_path):
-        print(f"Ошибка: файл {json_path} не найден. Сначала запустите бенчмарки.")
+        print(f"Error: {json_path} not found. Run benchmarks with --benchmark_out first.")
         return
 
-    with open(json_path, 'r') as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    cpu_times = {}
-    gpu_times = {}
+    vector_times: dict[int, float] = {}
+    eigen_times: dict[int, float] = {}
 
-    for bench in data.get('benchmarks', []):
-        name = bench['name']
-        parts = name.split('/')
+    for bench in data.get("benchmarks", []):
+        run_type = bench.get("run_type", "iteration")
+        if run_type == "aggregate" and bench.get("aggregate_name") != "mean":
+            continue
+
+        name = bench["name"]
+        parts = name.split("/")
         if len(parts) < 2:
             continue
 
-        size = int(parts[1])
-        time_ns = bench['real_time']
+        try:
+            size = int(parts[1])
+        except ValueError:
+            continue
 
-        if 'BM_VectorAdd_CPU' in parts[0]:
-            cpu_times[size] = time_ns
-        elif 'BM_VectorAdd_GPU' in parts[0]:
-            gpu_times[size] = time_ns
+        unit = bench.get("time_unit", "ns")
+        to_ns = {"ns": 1.0, "us": 1e3, "ms": 1e6, "s": 1e9}
+        time_ns = float(bench["real_time"]) * to_ns.get(unit, 1.0)
 
-    # Находим общие размеры векторов N
-    common_sizes = sorted(list(set(cpu_times.keys()) & set(gpu_times.keys())))
-    speedups = [cpu_times[s] / gpu_times[s] for s in common_sizes]
+        if parts[0] == "BM_Vector_operator_plus":
+            vector_times[size] = time_ns
+        elif parts[0] == "BM_Eigen_VectorXf_operator_plus":
+            eigen_times[size] = time_ns
 
-    plt.figure(figsize=(9, 5))
-    plt.plot(common_sizes, speedups, 'o-', color='#7570b3', linewidth=2, label='Ускорение S(N)')
-    plt.xscale('log')
+    common_sizes = sorted(set(vector_times) & set(eigen_times))
+    speedups = [eigen_times[s] / vector_times[s] for s in common_sizes]
 
-    # Пороговая линия паритета (1x)
-    plt.axhline(1.0, color='red', linestyle='--', alpha=0.7, label='Паритет (1x)')
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=common_sizes,
+            y=speedups,
+            mode="lines+markers",
+            name="Speedup S(N) = T_Eigen / T_Vector",
+        )
+    )
+    fig.add_hline(y=1.0, line_dash="dash", line_color="red", annotation_text="parity (1x)")
 
-    plt.xlabel('Размер вектора N (число элементов)', fontsize=11)
-    plt.ylabel('Коэффициент ускорения S(N) = T_CPU / T_GPU', fontsize=11)
-    plt.title('График ускорения GPU относительно CPU', fontsize=12, fontweight='bold')
-    plt.grid(True, which="both", ls="--", alpha=0.5)
-    plt.legend(fontsize=10)
-    plt.tight_layout()
+    fig.update_layout(
+        title="Speedup of Vector operator+ vs Eigen::VectorXf",
+        xaxis_title="Vector size N",
+        yaxis_title="Speedup S(N)",
+        xaxis_type="log",
+        template="plotly_white",
+        legend=dict(x=0.02, y=0.98),
+    )
 
-    os.makedirs('docs/images', exist_ok=True)
-    out_path = 'docs/images/speedup_chart.png'
-    plt.savefig(out_path, dpi=300)
-    print(f"График ускорения сохранен: {out_path}")
+    os.makedirs("docs/images", exist_ok=True)
+    out_html = "docs/images/speedup_chart.html"
+    out_png = "docs/images/speedup_chart.png"
+    fig.write_html(out_html)
+    try:
+        fig.write_image(out_png, scale=2)
+        print(f"Saved: {out_html}, {out_png}")
+    except Exception as exc:
+        print(f"Saved: {out_html} (PNG skipped: {exc})")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

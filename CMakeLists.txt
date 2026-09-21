@@ -11,8 +11,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Настройки архитектуры GPU (Ampere: RTX 3050 Ti -> sm_86)
+# GPU architecture (Ampere: RTX 3050 Ti -> sm_86)
 set(CMAKE_CUDA_ARCHITECTURES 86)
+
+find_package(CUDAToolkit REQUIRED)
 
 include(FetchContent)
 
@@ -33,12 +35,22 @@ set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googlebenchmark)
 
 # Eigen 3
+set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(
   eigen
   GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
   GIT_TAG 3.4.0
 )
 FetchContent_MakeAvailable(eigen)
+
+# Re-enable CTest discovery for our unit tests after Eigen's FetchContent.
+set(BUILD_TESTING ON CACHE BOOL "" FORCE)
+
+if(NOT TARGET Eigen3::Eigen)
+  add_library(Eigen3::Eigen ALIAS eigen)
+endif()
 
 add_subdirectory(core)
 add_subdirectory(tests)

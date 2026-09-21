@@ -1,2 +1,5 @@
 .vs/
 out/
+build/
+benchmark_results.json
+__pycache__/

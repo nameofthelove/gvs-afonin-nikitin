@@ -1,67 +1,63 @@
-#include <gtest/gtest.h>
-#include "vector.cuh"
+#include <cstddef>
+#include <stdexcept>
 #include <vector>
-#include <cmath>
 
-// 1. Тест базовой корректности сложения float
-TEST(VectorAddTest, CorrectAdditionFloat) {
-    constexpr size_t N = 1024;
-    Vector<float> a(N);
-    Vector<float> b(N);
+#define EIGEN_NO_CUDA
+#include <Eigen/Dense>
+#include <gtest/gtest.h>
 
-    // Заполнение входных данных
-    for (size_t i = 0; i < N; ++i) {
-        a.view()[i] = static_cast<float>(i);
-        b.view()[i] = static_cast<float>(i * 2);
-    }
+#include "vector.cuh"
 
-    // Выполнение сложения на GPU
-    Vector<float> c = a + b;
+namespace {
 
-    // Проверка результатов
-    for (size_t i = 0; i < N; ++i) {
-        EXPECT_FLOAT_EQ(c.view()[i], static_cast<float>(i * 3));
+constexpr float kAbsTol = 1e-6f;
+
+void fill_host(std::vector<float>& a, std::vector<float>& b) {
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        a[i] = static_cast<float>(i) * 0.5f + 1.0f;
+        b[i] = static_cast<float>(i) * 0.25f - 0.5f;
     }
 }
 
-// 2. Тест сложения большого вектора (перекрытие множества CUDA-блоков)
-TEST(VectorAddTest, LargeVectorAddition) {
-    constexpr size_t N = 1'000'000;
-    Vector<int> a(N);
-    Vector<int> b(N);
+}  // namespace
 
-    for (size_t i = 0; i < N; ++i) {
-        a.view()[i] = 10;
-        b.view()[i] = 20;
-    }
+class VectorAddTest : public ::testing::TestWithParam<std::size_t> {};
 
-    Vector<int> c = a + b;
+TEST_P(VectorAddTest, MatchesEigenVectorXf) {
+    const std::size_t n = GetParam();
 
-    for (size_t i = 0; i < 1000; ++i) { // Выборочная проверка для скорости
-        EXPECT_EQ(c.view()[i], 30);
-    }
-    EXPECT_EQ(c.view()[N - 1], 30);
+    std::vector<float> host_a(n);
+    std::vector<float> host_b(n);
+    fill_host(host_a, host_b);
+
+    Eigen::VectorXf eigen_a = Eigen::Map<Eigen::VectorXf>(host_a.data(), static_cast<Eigen::Index>(n));
+    Eigen::VectorXf eigen_b = Eigen::Map<Eigen::VectorXf>(host_b.data(), static_cast<Eigen::Index>(n));
+    const Eigen::VectorXf eigen_sum = eigen_a + eigen_b;
+
+    Vector<float> a(n);
+    Vector<float> b(n);
+    a.data().copy_from_host(host_a.data());
+    b.data().copy_from_host(host_b.data());
+
+    const Vector<float> c = a + b;
+
+    std::vector<float> host_c(n);
+    c.data().copy_to_host(host_c.data());
+
+    const Eigen::Map<const Eigen::VectorXf> cuda_sum(
+        host_c.data(), static_cast<Eigen::Index>(n));
+
+    EXPECT_TRUE(cuda_sum.isApprox(eigen_sum, kAbsTol))
+        << "Mismatch for n = " << n;
 }
 
-// 3. Тест на исключение при разной длине векторов
-TEST(VectorAddTest, DimensionMismatchException) {
-    Vector<float> a(100);
-    Vector<float> b(200);
+INSTANTIATE_TEST_SUITE_P(
+    RequiredSizes,
+    VectorAddTest,
+    ::testing::Values(1, 2, 3, 127, 128, 129, 512, 1024, 1029));
 
-    EXPECT_THROW({
-        Vector<float> c = a + b;
-        }, std::invalid_argument);
-}
-
-// 4. Граничный случай: вектор из 1 элемента
-TEST(VectorAddTest, SingleElement) {
-    Vector<double> a(1);
-    Vector<double> b(1);
-
-    a.view()[0] = 3.14159;
-    b.view()[0] = 2.71828;
-
-    Vector<double> c = a + b;
-
-    EXPECT_DOUBLE_EQ(c.view()[0], 3.14159 + 2.71828);
+TEST(VectorAddExtraTest, DimensionMismatchThrows) {
+    const Vector<float> a(8);
+    const Vector<float> b(16);
+    EXPECT_THROW({ const Vector<float> c = a + b; }, std::invalid_argument);
 }
