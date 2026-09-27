@@ -7,6 +7,30 @@ from __future__ import annotations
 
 import json
 import os
+import re
+
+
+def _bench_size(bench: dict) -> int | None:
+    """Parse N from Google Benchmark names.
+
+    Examples:
+      BM_Vector_operator_plus/8/manual_time_mean
+      BM_Eigen_VectorXf_operator_plus/8_mean
+      BM_Eigen_VectorXf_operator_plus/8
+    """
+    run_name = bench.get("run_name") or bench.get("name", "")
+    parts = run_name.split("/")
+    if len(parts) < 2:
+        return None
+    match = re.match(r"^(\d+)", parts[1])
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _bench_family(bench: dict) -> str:
+    name = bench.get("run_name") or bench.get("name", "")
+    return name.split("/")[0]
 
 
 def _collect_times(data: dict) -> tuple[dict[int, float], dict[int, float]]:
@@ -19,20 +43,16 @@ def _collect_times(data: dict) -> tuple[dict[int, float], dict[int, float]]:
         if run_type == "aggregate" and bench.get("aggregate_name") != "mean":
             continue
 
-        parts = bench["name"].split("/")
-        if len(parts) < 2:
-            continue
-
-        try:
-            size = int(parts[1])
-        except ValueError:
+        size = _bench_size(bench)
+        if size is None:
             continue
 
         time_ns = float(bench["real_time"]) * to_ns.get(bench.get("time_unit", "ns"), 1.0)
+        family = _bench_family(bench)
 
-        if parts[0] == "BM_Vector_operator_plus":
+        if family == "BM_Vector_operator_plus":
             vector_times[size] = time_ns
-        elif parts[0] == "BM_Eigen_VectorXf_operator_plus":
+        elif family == "BM_Eigen_VectorXf_operator_plus":
             eigen_times[size] = time_ns
 
     return vector_times, eigen_times
@@ -111,6 +131,13 @@ def main() -> None:
     common_sizes = sorted(set(vector_times) & set(eigen_times))
     speedups = [eigen_times[s] / vector_times[s] for s in common_sizes]
 
+    print(f"Speedup points: {len(common_sizes)}")
+    if not common_sizes:
+        print("Warning: no overlapping sizes — chart would be empty.")
+        print(f"  Vector sizes: {sorted(vector_times)}")
+        print(f"  Eigen sizes:  {sorted(eigen_times)}")
+        return
+
     os.makedirs("docs/images", exist_ok=True)
     out_html = "docs/images/speedup_chart.html"
     _write_plotly_html(
@@ -120,7 +147,8 @@ def main() -> None:
         speedups=speedups,
     )
     print(f"Saved: {out_html}")
-    print("Open the HTML in a browser (needs network once for Plotly CDN).")
+    for s, sp in zip(common_sizes, speedups):
+        print(f"  N={s}: S={sp:.3f}")
 
 
 if __name__ == "__main__":
