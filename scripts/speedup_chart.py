@@ -59,43 +59,22 @@ def _collect_times(data: dict) -> tuple[dict[int, float], dict[int, float]]:
 
 
 def _write_plotly_html(path: str, title: str, sizes: list[int], speedups: list[float]) -> None:
+    # Log-log plot (same style as the course example / Fig. 3).
     traces = [
         {
             "x": sizes,
             "y": speedups,
             "mode": "lines+markers",
-            "name": "Speedup S(N) = T_Eigen / T_Vector",
+            "name": "Speedup = T_CPU / T_GPU",
             "type": "scatter",
         }
     ]
     layout = {
         "title": title,
-        "xaxis": {"title": "Vector size N", "type": "log"},
-        "yaxis": {"title": "Speedup S(N)"},
+        "xaxis": {"title": "N", "type": "log"},
+        "yaxis": {"title": "Speedup", "type": "log"},
         "template": "plotly_white",
         "legend": {"x": 0.02, "y": 0.98},
-        "shapes": [
-            {
-                "type": "line",
-                "xref": "paper",
-                "x0": 0,
-                "x1": 1,
-                "y0": 1,
-                "y1": 1,
-                "line": {"color": "red", "dash": "dash"},
-            }
-        ],
-        "annotations": [
-            {
-                "xref": "paper",
-                "x": 1,
-                "y": 1,
-                "text": "parity (1x)",
-                "showarrow": False,
-                "yshift": 10,
-                "font": {"color": "red"},
-            }
-        ],
     }
     html = f"""<!DOCTYPE html>
 <html>
@@ -142,7 +121,7 @@ def main() -> None:
     out_html = "docs/images/speedup_chart.html"
     _write_plotly_html(
         out_html,
-        title="Speedup of Vector operator+ vs Eigen::VectorXf",
+        title="Speedup: CUDA Vector Addition (GPU) vs Eigen Vector Addition (CPU)",
         sizes=common_sizes,
         speedups=speedups,
     )
