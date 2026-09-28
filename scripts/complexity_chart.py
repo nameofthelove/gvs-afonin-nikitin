@@ -1,4 +1,4 @@
-"""Build real-complexity chart for Vector vs Eigen::VectorXf operator+.
+"""Build real-complexity chart (Fig. 2 style): Eigen CPU vs CUDA GPU.
 
 Uses only the Python standard library. Plotly.js is loaded from CDN in the HTML.
 """
@@ -11,15 +11,7 @@ import re
 
 
 def _bench_size(bench: dict) -> int | None:
-    """Parse N from Google Benchmark names.
-
-    Examples:
-      BM_Vector_operator_plus/8/manual_time_mean
-      BM_Eigen_VectorXf_operator_plus/8_mean
-      BM_Eigen_VectorXf_operator_plus/8
-    """
     run_name = bench.get("run_name") or bench.get("name", "")
-    # First path segment after the benchmark id is the size.
     parts = run_name.split("/")
     if len(parts) < 2:
         return None
@@ -64,19 +56,19 @@ def _collect_times(data: dict) -> tuple[list[int], list[float], list[int], list[
     return vector_sizes, vector_times_ms, eigen_sizes, eigen_times_ms
 
 
-def _write_plotly_html(
-    path: str,
-    title: str,
-    x_title: str,
-    y_title: str,
-    traces: list[dict],
-    x_log: bool = True,
-    y_log: bool = True,
-) -> None:
+def _write_plotly_html(path: str, traces: list[dict]) -> None:
+    # Match course Fig. 2: log-log, Time in ms with µ labels for small values.
+    tick_vals = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100]
+    tick_text = ["1µ", "10µ", "100µ", "0.001", "0.01", "0.1", "1", "10", "100"]
     layout = {
-        "title": title,
-        "xaxis": {"title": x_title, "type": "log" if x_log else "linear"},
-        "yaxis": {"title": y_title, "type": "log" if y_log else "linear"},
+        "title": "Real Complexity",
+        "xaxis": {"title": "N", "type": "log"},
+        "yaxis": {
+            "title": "Time, ms",
+            "type": "log",
+            "tickvals": tick_vals,
+            "ticktext": tick_text,
+        },
         "template": "plotly_white",
         "legend": {"x": 0.02, "y": 0.98},
     }
@@ -85,7 +77,7 @@ def _write_plotly_html(
 <head>
   <meta charset="utf-8"/>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <title>{title}</title>
+  <title>Real Complexity</title>
 </head>
 <body>
   <div id="chart" style="width:100%;height:600px;"></div>
@@ -111,38 +103,35 @@ def main() -> None:
         data = json.load(f)
 
     vector_sizes, vector_times_ms, eigen_sizes, eigen_times_ms = _collect_times(data)
-    print(f"Vector points: {len(vector_sizes)}, Eigen points: {len(eigen_sizes)}")
+    print(f"CUDA points: {len(vector_sizes)}, Eigen points: {len(eigen_sizes)}")
     if not vector_sizes or not eigen_sizes:
         print("Warning: missing series — check benchmark_results.json names.")
 
+    # Same order/colors as the course example: Eigen=blue, CUDA=red.
     traces = [
-        {
-            "x": vector_sizes,
-            "y": vector_times_ms,
-            "mode": "lines+markers",
-            "name": "Vector (CUDA operator+)",
-            "type": "scatter",
-        },
         {
             "x": eigen_sizes,
             "y": eigen_times_ms,
             "mode": "lines+markers",
-            "name": "Eigen::VectorXf (operator+)",
+            "name": "Eigen Vector Addition (CPU)",
             "type": "scatter",
+            "line": {"color": "#1f77b4"},
+            "marker": {"color": "#1f77b4"},
+        },
+        {
+            "x": vector_sizes,
+            "y": vector_times_ms,
+            "mode": "lines+markers",
+            "name": "CUDA Vector Addition (GPU)",
+            "type": "scatter",
+            "line": {"color": "#d62728"},
+            "marker": {"color": "#d62728"},
         },
     ]
 
     os.makedirs("docs/images", exist_ok=True)
     out_html = "docs/images/complexity_chart.html"
-    _write_plotly_html(
-        out_html,
-        title="Real complexity of operator+",
-        x_title="Vector size N",
-        y_title="Time T(N), ms",
-        traces=traces,
-        x_log=True,
-        y_log=True,
-    )
+    _write_plotly_html(out_html, traces)
     print(f"Saved: {out_html}")
 
 
