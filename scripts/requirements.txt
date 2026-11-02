@@ -1,3 +1,0 @@
-plotly>=5.0
-kaleido>=0.2
-numpy>=1.21

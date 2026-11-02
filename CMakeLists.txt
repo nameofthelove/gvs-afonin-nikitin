@@ -4,31 +4,46 @@ if(POLICY CMP0135)
   cmake_policy(SET CMP0135 NEW)
 endif()
 
-project(work4 LANGUAGES CXX CUDA)
+# Архитектура GPU (Ampere: RTX 3050 Ti -> sm_86); переопределяется через -DCMAKE_CUDA_ARCHITECTURES.
+# Задаётся до project(): иначе project() подставляет архитектуру по умолчанию nvcc (sm_75).
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 86)
+endif()
+
+project(work6 LANGUAGES CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+# Сборки LibTorch для Windows бывают только Release (/MD): Debug несовместим по CRT.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-# Архитектура GPU (Ampere: RTX 3050 Ti -> sm_86); переопределяется через -DCMAKE_CUDA_ARCHITECTURES
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 86)
-endif()
-
-if(MSVC)
-  # Исходники в UTF-8 (комментарии на русском); C4068 — прагмы nvcc в заголовках Eigen
-  add_compile_options(
-    $<$<COMPILE_LANGUAGE:CXX>:/utf-8>
-    $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/utf-8,/wd4068>
-  )
-endif()
+set(TORCH_CUDA_ARCH_LIST "8.6" CACHE STRING "GPU architectures for the Torch CMake config")
 
 find_package(CUDAToolkit REQUIRED)
+
+# LibTorch: Torch_DIR или CMAKE_PREFIX_PATH, иначе — пакет torch из текущего Python
+# (torch.utils.cmake_prefix_path указывает на site-packages/torch/share/cmake).
+if(NOT DEFINED Torch_DIR AND NOT DEFINED ENV{Torch_DIR})
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND)
+    execute_process(
+      COMMAND ${Python3_EXECUTABLE} -c "import torch; print(torch.utils.cmake_prefix_path)"
+      OUTPUT_VARIABLE TORCH_CMAKE_PREFIX
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE TORCH_PYTHON_RESULT
+      ERROR_QUIET
+    )
+    if(TORCH_PYTHON_RESULT EQUAL 0)
+      list(APPEND CMAKE_PREFIX_PATH "${TORCH_CMAKE_PREFIX}")
+    endif()
+  endif()
+endif()
+find_package(Torch REQUIRED)
 
 include(FetchContent)
 
@@ -41,30 +56,7 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-# Google Benchmark
-FetchContent_Declare(
-  googlebenchmark
-  URL https://github.com/google/benchmark/archive/refs/tags/v1.8.3.zip
-)
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(googlebenchmark)
-
-# Eigen 3
-FetchContent_Declare(
-  eigen
-  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
-  GIT_TAG 3.4.0
-  GIT_SHALLOW TRUE
-)
-set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
-set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(eigen)
-
 enable_testing()
 
 add_subdirectory(core)
 add_subdirectory(tests)
-add_subdirectory(benchmarks)

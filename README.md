@@ -1,64 +1,69 @@
-# Практическая работа №4 — умножение матриц на тензорных ядрах CUDA
+# Практическая работа №6 — CUDA-ядро свёртки, совместимое с PyTorch
 
 Дисциплина «Гибридные вычислительные системы», ИКИТ СФУ.
 
-Реализован кёрнел `kernel_matmul_wmma` — умножение матриц `half` на тензорных ядрах (CUDA WMMA).
-Блок из 8 варпов (решётка 2×4) вычисляет тайл C в регистрах, тайлы A и B буферизуются в разделяемой
-памяти. Алгоритм подключается к `Matrix::operator*` по паттерну «Стратегия»: для `half` по умолчанию
-используется `WmmaMatmul` (тайлы 128×128×32), для остальных типов — `SharedMemoryMatmul` из работы №3.
+Реализован кёрнел `hsys::nn::functional::kernels::conv2d` — пакетная многоканальная двумерная
+свёртка (кросс-корреляция) с шагом, отступом и расширением. Тензоры передаются через
+`torch::PackedTensorAccessor32`, параметры фильтра — аргументы шаблона, поэтому циклы по фильтру
+развёрнуты компилятором. Функция `hsys::nn::functional::conv2d<k, s, p, d>(input, weights)`
+проверяет аргументы, выделяет выходной тензор и запускает кёрнел в текущем потоке PyTorch для
+типов `float`, `double`, `half` и `bfloat16`.
+
+## Алгоритм
+
+Блок 16×16 нитей вычисляет тайл выхода 16×16 сразу для 8 выходных каналов. Для каждого входного
+канала блок загружает в разделяемую память тайл входа `(16 − 1)·s + (k − 1)·d + 1` в квадрате
+(вместо отступа записываются нули) и веса 8 каналов, затем каждая нить накапливает 8 сумм в
+регистрах. Элемент тайла переиспользуется `k²` соседними нитями и 8 каналами; значения `half` и
+`bfloat16` накапливаются во `float` (`at::acc_type`). Пары «изображение × группа каналов»
+распределяются по `gridDim.z` с шагом, поэтому размер пакета не ограничен пределом сетки 65535.
 
 ## Структура
 
 ```
-core/        библиотека: Data, MatrixView, Matrix, стратегии и кёрнелы
-  include/kernel.cuh           кёрнелы naive, shmem, wmma и функции запуска
-  include/matmul_strategy.cuh  MatmulStrategy, NaiveMatmul, SharedMemoryMatmul, WmmaMatmul
-  include/matrix.cuh           фасад Matrix и operator*
-tests/       модульные тесты (Google Test, эталон — Eigen::half)
-benchmarks/  бенчмарки (Google Benchmark + CUDA Events)
-scripts/     построение графиков (plotly)
-results/     результаты бенчмарков (JSON) и таблица погрешностей (CSV)
-docs/        отчёт и графики
+core/include/hsys/nn/functional/
+  kernels/conv2d.cuh   кёрнел conv2d, формулы размера выхода и тайла
+  conv2d.cuh           функция запуска: проверки TORCH_CHECK, диспетчеризация типов, сетка
+tests/
+  include/conv2d_instances.h   реестр экземпляров conv2d с параметрами времени компиляции
+  src/conv2d_instances.cu      экземпляры: табл. 1 задания, блоки 8 и 32, параметры вне таблицы
+  src/test_conv2d.cpp          модульные тесты (Google Test, эталон — torch::nn::functional::conv2d)
+docs/        отчёт
 ```
+
+## Тесты
+
+| Набор | Что проверяет |
+|---|---|
+| `Table1/Conv2dTableTest` | декартово произведение табл. 1 (6 × 9) для `float`, `half`, `bfloat16`, пакет из 2 изображений |
+| `EdgeCases/Conv2dEdgeTest` | размеры, не кратные тайлу и группе каналов; выход 1×1; фильтр шире изображения; блоки 8×8 и 32×32; чётный фильтр, шаг больше фильтра, отступ больше половины фильтра |
+| `Table1/Conv2dExactTest` | точное совпадение на целых значениях в `double`; единичный импульс воспроизводит фильтр |
+| `Conv2dLayoutTest` | транспонированный вход, `ChannelsLast`, срезы с шагом |
+| `Conv2dLaunchTest` | цикл по `gridDim.z` (70000 пар), пустой пакет, пользовательский поток, детерминированность, формулы (3)–(4) против PyTorch |
+| `Conv2dErrorTest` | тензоры на CPU, разные типы, неподдерживаемый тип, неверная размерность, несовпадение каналов и размера фильтра, слишком маленький вход |
+
+Сравнение — `torch::allclose` с допусками задания: `rtol = atol = 1e-5` для `float`, `1e-2` для
+`half` и `bfloat16`. Эталон считается в `double` и приводится к типу входа, поэтому TF32 cuDNN
+(включён по умолчанию на Ampere) на результат не влияет. Входы — из [−1, 1], веса — из
+[−1/√fan_in, 1/√fan_in], как при инициализации `torch::nn::Conv2d`.
 
 ## Сборка и запуск
 
-Требуется CUDA Toolkit (проверено на 13.3) и GPU не ниже Volta, CMake ≥ 3.24, Ninja, компилятор
-C++20 (MSVC 19.42 / GCC). Google Test, Google Benchmark и Eigen загружаются через FetchContent.
+Требуется CUDA Toolkit, CMake ≥ 3.24, Ninja, компилятор C++20 (MSVC 2022 / GCC) и LibTorch с
+поддержкой CUDA. LibTorch ищется по `Torch_DIR` / `CMAKE_PREFIX_PATH`, а если они не заданы — в
+пакете `torch` текущего интерпретатора Python. Google Test загружается через FetchContent.
 Архитектура GPU по умолчанию — `sm_86`, переопределяется через `-DCMAKE_CUDA_ARCHITECTURES`.
-Аппаратное асинхронное копирование `__pipeline_memcpy_async` доступно начиная с Ampere (`sm_80`).
+На Windows сборки LibTorch бывают только Release, поэтому предусмотрен один пресет.
 
 ```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu132
 cmake --preset release
 cmake --build build
 ctest --test-dir build
-./build/benchmarks/benchmarks --benchmark_filter='-/(2048|4096)/' --benchmark_out=results/benchmark_results.json --benchmark_out_format=json
-./build/benchmarks/benchmarks --benchmark_filter='/(2048|4096)/' --benchmark_out=results/benchmark_results_large.json --benchmark_out_format=json
-./build/tests/unit_tests --gtest_also_run_disabled_tests --gtest_filter='*AccuracyReport*'
 ```
 
-## Графики
+Или с распакованным архивом LibTorch:
 
 ```bash
-pip install -r scripts/requirements.txt
-python scripts/complexity_chart.py
-python scripts/speedup_chart.py
-python scripts/performance_chart.py
-python scripts/geometry_chart.py
+cmake --preset release -DCMAKE_PREFIX_PATH=/path/to/libtorch
 ```
-
-Графики сохраняются в `docs/images` (PNG и интерактивный HTML).
-
-## Результаты (RTX 3050 Ti Laptop, медиана из 10 повторов)
-
-| n    | shmem float, мкс | shmem half, мкс | wmma 128×128×32, мкс | ускорение (half) |
-|-----:|-----------------:|----------------:|---------------------:|-----------------:|
-| 256  | 54,1             | 54,1            | 26,0                 | 2,08             |
-| 512  | 392,8            | 384,1           | 42,3                 | 9,08             |
-| 1024 | 3280,8           | 3059,5          | 237,1                | 12,90            |
-| 2048 | 25769,3          | 25259,2         | 1588,4               | 15,90            |
-| 4096 | 207837,0         | 204341,4        | 12741,7              | 16,04            |
-
-При n ≤ 128 время всех версий определяется постоянными накладными расходами запуска (около 18 мкс).
-Предел тензорных ядер, измеренный калибровочным бенчмарком, — 37 TFLOP/s; достигнуто 10,8 TFLOP/s:
-около 70 % времени уходит на загрузку тайлов из глобальной памяти.
