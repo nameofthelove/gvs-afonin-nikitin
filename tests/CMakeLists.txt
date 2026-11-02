@@ -1,5 +1,5 @@
 add_executable(unit_tests
-    src/test_matmul.cu
+    src/test_vecred.cu
 )
 
 target_include_directories(unit_tests PRIVATE

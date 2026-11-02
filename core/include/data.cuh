@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cuda_runtime.h>
+#include <stdexcept>
 #include <utility>
 
 #include "cuda_check.cuh"
@@ -26,7 +27,7 @@ public:
         }
     }
 
-    Data(const Data& other) : Data(other.size_) { //cop
+    Data(const Data& other) : Data(other.size_) {
         if (size_ > 0) {
             // При исключении память освободит деструктор делегирующего конструктора.
             check_cuda(cudaMemcpy(data_, other.data_, size_ * sizeof(AtomT),
@@ -58,11 +59,17 @@ public:
         return *this;
     }
 
-    void copy_to_host(AtomT* host_ptr) const {
-        if (size_ == 0) {
+    void copy_to_host(AtomT* host_ptr) const { copy_to_host(host_ptr, size_); }
+
+    // Копирует первые count элементов.
+    void copy_to_host(AtomT* host_ptr, std::size_t count) const {
+        if (count > size_) {
+            throw std::out_of_range("Data::copy_to_host: count exceeds size");
+        }
+        if (count == 0) {
             return;
         }
-        check_cuda(cudaMemcpy(host_ptr, data_, size_ * sizeof(AtomT), cudaMemcpyDeviceToHost),
+        check_cuda(cudaMemcpy(host_ptr, data_, count * sizeof(AtomT), cudaMemcpyDeviceToHost),
                    "cudaMemcpy (D2H)");
     }
 

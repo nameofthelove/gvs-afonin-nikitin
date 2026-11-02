@@ -1,5 +1,5 @@
 add_library(core STATIC
-    src/matrix.cu
+    src/vector.cu
 )
 
 target_include_directories(core PUBLIC
