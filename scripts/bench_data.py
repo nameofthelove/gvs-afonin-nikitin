@@ -6,20 +6,31 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_JSON = ROOT / "results" / "benchmark_results.json"
+LARGE_JSON = ROOT / "results" / "benchmark_results_large.json"
 IMAGES_DIR = ROOT / "docs" / "images"
 
-NAIVE = "BM_Matrix_operator_mul<Naive>"
-SHMEM16 = "BM_Matrix_operator_mul<Shmem16>"
-SHMEM32 = "BM_Matrix_operator_mul<Shmem32>"
+SHMEM_FLOAT = "BM_Matrix_operator_mul<ShmemFloat>"
+SHMEM_HALF = "BM_Matrix_operator_mul<ShmemHalf>"
+WMMA = "BM_Matrix_operator_mul<Wmma>"
+WMMA_MIN = "BM_Matrix_operator_mul<Wmma_32_64_32>"
+PEAK = "BM_Wmma_peak"
 
 LABELS = {
-    NAIVE: "kernel_matmul_naive (работа №2)",
-    SHMEM16: "kernel_matmul_shmem, тайл 16×16",
-    SHMEM32: "kernel_matmul_shmem, тайл 32×32",
+    SHMEM_FLOAT: "kernel_matmul_shmem, float (работа №3)",
+    SHMEM_HALF: "kernel_matmul_shmem, half (работа №3)",
+    WMMA: "kernel_matmul_wmma, тайл 128×128×32",
+    WMMA_MIN: "kernel_matmul_wmma, тайл 32×64×32",
 }
 
-COLORS = {NAIVE: "#d95f02", SHMEM16: "#1b9e77", SHMEM32: "#7570b3"}
-SYMBOLS = {NAIVE: "circle", SHMEM16: "square", SHMEM32: "diamond"}
+COLORS = {SHMEM_FLOAT: "#7570b3", SHMEM_HALF: "#d95f02", WMMA: "#1b9e77", WMMA_MIN: "#66a61e"}
+SYMBOLS = {SHMEM_FLOAT: "diamond", SHMEM_HALF: "circle", WMMA: "square", WMMA_MIN: "triangle-up"}
+
+# Типичная частота GPU под нагрузкой (nvidia-smi --query-gpu=clocks.gr), МГц:
+# cudaDevAttrClockRate возвращает 1485 МГц, а во время измерений частота составляла 1845–1950 МГц.
+LOADED_CLOCK_MHZ = 1900
+
+# Постоянные накладные расходы на запуск кёрнела и запись событий, с (медиана T при n <= 64).
+OVERHEAD_SIZES = (16, 32, 64)
 
 # Множители перевода в секунды для поля time_unit.
 _TO_SECONDS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1.0}
@@ -38,16 +49,25 @@ def load_json(json_path: Path = DEFAULT_JSON) -> dict:
         return json.load(f)
 
 
-def load(json_path: Path = DEFAULT_JSON) -> dict[str, Series]:
-    """Возвращает {имя бенчмарка: Series} по агрегатам median и stddev."""
+def load(json_path: Path = DEFAULT_JSON, large: bool = False) -> dict[str, Series]:
+    """Возвращает {имя бенчмарка: Series} по агрегатам median и stddev.
+
+    large=True добавляет контрольные размеры сверх задания (2048 и 4096).
+    """
+    benchmarks = load_json(json_path)["benchmarks"]
+    if large:
+        benchmarks = benchmarks + load_json(LARGE_JSON)["benchmarks"]
+
     stats: dict[str, dict[int, dict[str, float]]] = {}
-    for bench in load_json(json_path)["benchmarks"]:
+    for bench in benchmarks:
         aggregate = bench.get("aggregate_name")
         if aggregate not in ("median", "stddev"):
             continue
-        family, size = bench["run_name"].split("/")[:2]
+        parts = bench["run_name"].split("/")
+        if not parts[1].isdigit():  # калибровочный бенчмарк без размера матрицы
+            continue
         seconds = bench["real_time"] * _TO_SECONDS[bench["time_unit"]]
-        stats.setdefault(family, {}).setdefault(int(size), {})[aggregate] = seconds
+        stats.setdefault(parts[0], {}).setdefault(int(parts[1]), {})[aggregate] = seconds
 
     result = {}
     for family, by_size in stats.items():
@@ -58,6 +78,27 @@ def load(json_path: Path = DEFAULT_JSON) -> dict[str, Series]:
             stddev_s=[by_size[n].get("stddev", 0.0) for n in sizes],
         )
     return result
+
+
+def peak_gflops(json_path: Path = DEFAULT_JSON) -> float:
+    """Измеренный предел тензорных ядер, GFLOP/s (калибровочный бенчмарк BM_Wmma_peak)."""
+    for bench in load_json(json_path)["benchmarks"]:
+        if bench["run_name"].startswith(PEAK) and bench.get("aggregate_name") == "median":
+            seconds = bench["real_time"] * _TO_SECONDS[bench["time_unit"]]
+            return bench["flop"] / seconds / 1e9
+    raise ValueError(f"{PEAK} not found in {json_path}")
+
+
+def geometry(family: str) -> tuple[int, int, int]:
+    """(BlockItemsY, BlockItemsX, BlockItemsK) для бенчмарка kernel_matmul_wmma."""
+    if family == WMMA:
+        return 128, 128, 32
+    y, x, k = family.split("<")[1].rstrip(">").split("_")[1:]
+    return int(y), int(x), int(k)
+
+
+def is_wmma(family: str) -> bool:
+    return "<Wmma" in family
 
 
 def gflops(n: int, seconds: float) -> float:

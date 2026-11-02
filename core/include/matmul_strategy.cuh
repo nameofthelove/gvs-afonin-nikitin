@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <memory>
+#include <type_traits>
 
 #include "kernel.cuh"
 #include "matrix_view.cuh"
@@ -12,6 +14,8 @@
 template <typename AtomT>
 class MatmulStrategy {
 public:
+    using Atom = AtomT;
+
     virtual ~MatmulStrategy() = default;
 
     virtual void multiply(MatrixView<AtomT> a, MatrixView<AtomT> b, MatrixView<AtomT> c,
@@ -38,9 +42,26 @@ public:
     }
 };
 
-// Стратегия, используемая Matrix::operator* по умолчанию.
+// Умножение на тензорных ядрах (WMMA): только для half, размеры тайлов задают геометрию блока.
+template <unsigned int BlockItemsY = kWmmaBlockItemsY, unsigned int BlockItemsX = kWmmaBlockItemsX,
+          unsigned int BlockItemsK = kWmmaBlockItemsK>
+class WmmaMatmul final : public MatmulStrategy<half> {
+public:
+    void multiply(MatrixView<half> a, MatrixView<half> b, MatrixView<half> c,
+                  cudaStream_t stream = nullptr) const override {
+        launch_matmul_wmma<BlockItemsY, BlockItemsX, BlockItemsK>(a, b, c, stream);
+    }
+};
+
+// Стратегия, используемая Matrix::operator* по умолчанию: тензорные ядра поддерживают только
+// half, остальные типы умножаются блочным алгоритмом с разделяемой памятью.
 template <typename AtomT>
 std::shared_ptr<const MatmulStrategy<AtomT>> default_matmul_strategy() {
-    static const auto strategy = std::make_shared<const SharedMemoryMatmul<AtomT>>();
-    return strategy;
+    if constexpr (std::is_same_v<AtomT, half>) {
+        static const auto strategy = std::make_shared<const WmmaMatmul<>>();
+        return strategy;
+    } else {
+        static const auto strategy = std::make_shared<const SharedMemoryMatmul<AtomT>>();
+        return strategy;
+    }
 }

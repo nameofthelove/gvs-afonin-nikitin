@@ -9,10 +9,10 @@ from pathlib import Path
 import numpy as np
 import plotly.graph_objects as go
 
-from bench_data import (COLORS, DEFAULT_JSON, LABELS, NAIVE, SHMEM16, SHMEM32, SYMBOLS,
-                        gflops, load, save)
+from bench_data import (COLORS, DEFAULT_JSON, LABELS, SHMEM_FLOAT, SHMEM_HALF, SYMBOLS, WMMA,
+                        WMMA_MIN, gflops, load, save)
 
-FAMILIES = (NAIVE, SHMEM16, SHMEM32)
+FAMILIES = (SHMEM_FLOAT, SHMEM_HALF, WMMA, WMMA_MIN)
 
 
 def fit_exponent(sizes: list[int], times: list[float], min_size: int) -> float:
@@ -38,38 +38,45 @@ def main() -> None:
         ))
 
     # Теоретическая оценка O(n^3), привязанная к последней точке измерений.
-    for family in (NAIVE, SHMEM16):
+    for family, label in ((SHMEM_HALF, "shmem"), (WMMA, "wmma")):
         s = series[family]
         n_max, t_max = s.sizes[-1], s.median_s[-1]
         fig.add_trace(go.Scatter(
             x=s.sizes, y=[t_max * (n / n_max) ** 3 * 1e3 for n in s.sizes],
-            mode="lines", name=f"c·n³ ({LABELS[family].split(',')[0].split(' ')[0]})",
+            mode="lines", name=f"c·n³ ({label})",
             line=dict(color=COLORS[family], width=1, dash="dash"),
         ))
 
     fig.update_layout(
         title="Реальная вычислительная сложность умножения матриц n×n",
-        xaxis=dict(title="Размер матрицы n", type="log", tickvals=series[NAIVE].sizes),
-        yaxis=dict(title="Время T(n), мс", type="log", exponentformat="power"),
+        xaxis=dict(title="Размер матрицы n", type="log", tickvals=series[WMMA].sizes),
+        # Диапазон ограничен измерениями: теоретические прямые при малых n ушли бы на порядки ниже.
+        yaxis=dict(title="Время T(n), мс", type="log", exponentformat="power",
+                   range=[np.log10(5e-3), np.log10(10.0)]),
         template="plotly_white", legend=dict(x=0.01, y=0.99),
     )
     save(fig, "complexity_chart")
 
     # Таблица для отчёта.
-    header = f"{'n':>6}" + "".join(f" | {name.split('<')[1][:-1]:>9}, мкс | GFLOP/s"
+    header = f"{'n':>6}" + "".join(f" | {name.split('<')[1][:-1]:>14}, мкс | GFLOP/s"
                                     for name in FAMILIES)
     print("\n" + header)
-    for i, n in enumerate(series[NAIVE].sizes):
+    for i, n in enumerate(series[WMMA].sizes):
         row = f"{n:>6}"
         for family in FAMILIES:
             t = series[family].median_s[i]
-            row += f" | {t * 1e6:>14.1f} | {gflops(n, t):>7.1f}"
+            row += f" | {t * 1e6:>19.1f} | {gflops(n, t):>7.1f}"
         print(row)
 
+    # Показатель степени по диапазону задания и по контрольным размерам сверх него.
+    extended = load(json_path, large=True)
     for family in FAMILIES:
-        s = series[family]
+        s, e = series[family], extended[family]
         print(f"{family}: p(n >= 16) = {fit_exponent(s.sizes, s.median_s, 16):.2f}, "
-              f"p(n >= 256) = {fit_exponent(s.sizes, s.median_s, 256):.2f}")
+              f"p(n >= 256) = {fit_exponent(s.sizes, s.median_s, 256):.2f}, "
+              f"p(n >= 1024) = {fit_exponent(e.sizes, e.median_s, 1024):.2f}")
+        print("    extended, us: " + ", ".join(f"{n}: {t * 1e6:.1f}" for n, t in
+                                               zip(e.sizes, e.median_s) if n >= 1024))
 
 
 if __name__ == "__main__":
